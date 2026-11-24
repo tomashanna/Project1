@@ -1,104 +1,46 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { z } from "zod";
 
-const ADMIN_EMAILS = ["admin@example.com", "admin@example.com"];
+import { errorResponse, HttpError, requireAdmin } from "@/lib/server/auth";
 
-function decodeJWT(token: string): Record<string, unknown> | null {
-  try {
-    const parts = token.split(".");
-    if (parts.length !== 3) return null;
-    const payload = Buffer.from(
-      parts[1].replace(/-/g, "+").replace(/_/g, "/"),
-      "base64"
-    ).toString("utf-8");
-    return JSON.parse(payload);
-  } catch {
-    return null;
-  }
-}
+const LookupBody = z.object({
+  email: z.string().trim().toLowerCase().pipe(z.email()),
+});
+
+const PAGE_SIZE = 1000;
+const MAX_PAGES = 50;
 
 export async function POST(req: NextRequest) {
-  const supabaseAdmin = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    { auth: { persistSession: false } }
-  );
+  try {
+    const { admin } = await requireAdmin(req);
 
-  // Verify caller is admin via JWT
-  const authHeader = req.headers.get("authorization") ?? "";
-  const token = authHeader.replace(/^Bearer\s+/i, "").trim();
-  if (!token) {
-    return NextResponse.json({ error: "No autorizado" }, { status: 401 });
-  }
+    const parsed = LookupBody.safeParse(await req.json().catch(() => null));
+    if (!parsed.success) throw new HttpError(400, "Email inválido");
+    const { email } = parsed.data;
 
-  const claims = decodeJWT(token);
-  if (!claims) {
-    return NextResponse.json({ error: "No autorizado: token inválido" }, { status: 401 });
-  }
+    // auth.admin has no lookup-by-email; page through users until found.
+    let found: { id: string; email?: string } | undefined;
+    for (let page = 1; page <= MAX_PAGES && !found; page++) {
+      const { data, error } = await admin.auth.admin.listUsers({ page, perPage: PAGE_SIZE });
+      if (error) throw error;
+      found = data.users.find((u) => u.email?.toLowerCase() === email);
+      if (data.users.length < PAGE_SIZE) break;
+    }
+    if (!found) throw new HttpError(404, "No se encontró ningún usuario con ese email");
 
-  const exp = claims.exp as number | undefined;
-  if (exp && exp * 1000 < Date.now()) {
-    return NextResponse.json({ error: "No autorizado: token expirado" }, { status: 401 });
-  }
-
-  const callerEmail = (claims.email as string | undefined) ?? "";
-  const callerId = (claims.sub as string | undefined) ?? "";
-
-  let isAdmin = ADMIN_EMAILS.includes(callerEmail);
-  if (!isAdmin && callerId) {
-    const supabaseForCheck = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      { global: { headers: { Authorization: `Bearer ${token}` } } }
-    );
-    const { data: p } = await supabaseForCheck
+    const { data: profile } = await admin
       .from("profiles")
-      .select("role")
-      .eq("id", callerId)
-      .single();
-    isAdmin = p?.role === "admin";
+      .select("full_name, company_name")
+      .eq("id", found.id)
+      .maybeSingle();
+
+    return NextResponse.json({
+      userId: found.id,
+      email: found.email,
+      fullName: profile?.full_name ?? null,
+      companyName: profile?.company_name ?? null,
+    });
+  } catch (err) {
+    return errorResponse(err, "lookup-user");
   }
-
-  if (!isAdmin) {
-    return NextResponse.json({ error: "No autorizado — solo admins" }, { status: 403 });
-  }
-
-  const { email } = await req.json();
-  if (!email) {
-    return NextResponse.json({ error: "email requerido" }, { status: 400 });
-  }
-
-  // Find user by email via auth admin API
-  const { data: { users }, error: listError } = await supabaseAdmin.auth.admin.listUsers({
-    page: 1,
-    perPage: 1000,
-  });
-
-  if (listError) {
-    return NextResponse.json({ error: "Error al buscar usuario" }, { status: 500 });
-  }
-
-  const foundUser = users.find((u) => u.email?.toLowerCase() === email.toLowerCase());
-  if (!foundUser) {
-    return NextResponse.json({ error: `No se encontró ningún usuario con email: ${email}` }, { status: 404 });
-  }
-
-  // Fetch profile for full_name
-  const supabaseForProfile = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    { global: { headers: { Authorization: `Bearer ${token}` } } }
-  );
-  const { data: profileData } = await supabaseForProfile
-    .from("profiles")
-    .select("full_name, company_name")
-    .eq("id", foundUser.id)
-    .maybeSingle();
-
-  return NextResponse.json({
-    userId: foundUser.id,
-    email: foundUser.email,
-    fullName: profileData?.full_name ?? null,
-    companyName: profileData?.company_name ?? null,
-  });
 }
