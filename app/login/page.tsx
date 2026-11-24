@@ -144,12 +144,7 @@ function LoginForm() {
           </button>
         </form>
         <div className="mt-4 flex flex-col items-center gap-2 text-sm text-zinc-500">
-          <p>
-            ¿No tienes cuenta?{" "}
-            <Link href="/signup" className="font-medium text-blue-600 hover:underline">
-              Crear cuenta
-            </Link>
-          </p>
+          <p>El acceso es solo por invitación.</p>
           <Link href="/forgot-password" className="font-medium text-blue-600 hover:underline">
             ¿Olvidaste tu contraseña?
           </Link>
