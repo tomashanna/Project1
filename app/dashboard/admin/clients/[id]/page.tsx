@@ -929,7 +929,7 @@ export default function AdminClientDetailPage() {
               Este cliente no tiene proyecto asignado
             </p>
             <p style={{ marginTop: "4px", fontSize: "13px", color: "var(--portal-fg-5)" }}>
-              Usa "Recrear proyecto" en el menú ⋮ para asignar un template.
+              Usa “Recrear proyecto” en el menú ⋮ para asignar un template.
             </p>
           </div>
         ) : phases.length === 0 ? (
@@ -947,7 +947,7 @@ export default function AdminClientDetailPage() {
                 <path d="M7 6v4M7 4.5v.5" stroke="#4F46E5" strokeWidth="1.5" strokeLinecap="round" />
               </svg>
               <span style={{ fontSize: "12px", color: "#4F46E5", fontWeight: 500 }}>
-                Vista de administrador — haz clic en cualquier tarea para validarla o marcarla. Usa "Agregar tarea" en la barra superior.
+                Vista de administrador — haz clic en cualquier tarea para validarla o marcarla. Usa “Agregar tarea” en la barra superior.
               </span>
             </div>
 

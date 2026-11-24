@@ -232,7 +232,7 @@ export default function ExportModal({
       }
 
       const allQIds = (questions ?? []).map((q) => q.id);
-      let filesByQuestion = new Map<string, number>();
+      const filesByQuestion = new Map<string, number>();
 
       if (allQIds.length > 0) {
         const { data: files } = await supabase

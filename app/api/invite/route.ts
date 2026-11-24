@@ -1,130 +1,76 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { z } from "zod";
 
-const ADMIN_EMAILS = ["admin@example.com", "admin@example.com"];
+import { errorResponse, HttpError, requireAdmin } from "@/lib/server/auth";
 
-function decodeJWT(token: string): Record<string, unknown> | null {
-  try {
-    const parts = token.split(".");
-    if (parts.length !== 3) return null;
-    const payload = Buffer.from(parts[1].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf-8");
-    return JSON.parse(payload);
-  } catch {
-    return null;
-  }
-}
+const InviteBody = z.object({
+  email: z.string().trim().toLowerCase().pipe(z.email()),
+  full_name: z.string().trim().max(200).optional(),
+  company_name: z.string().trim().max(200).optional(),
+  template_id: z.number().int().positive().nullish(),
+  section_ids: z.array(z.number().int().positive()).max(500).nullish(),
+  role: z.enum(["client", "admin"]).default("client"),
+});
 
 export async function POST(req: NextRequest) {
-  const supabaseAdmin = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    { auth: { persistSession: false } }
-  );
+  try {
+    const { admin } = await requireAdmin(req);
 
-  // Extract + decode the caller's JWT
-  const authHeader = req.headers.get("authorization") ?? "";
-  const token = authHeader.replace(/^Bearer\s+/i, "").trim();
-  if (!token) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+    const parsed = InviteBody.safeParse(await req.json().catch(() => null));
+    if (!parsed.success) throw new HttpError(400, "Datos de invitación inválidos");
+    const { email, full_name, company_name, template_id, section_ids, role } = parsed.data;
 
-  const claims = decodeJWT(token);
-  if (!claims) {
-    return NextResponse.json({ error: "Unauthorized: invalid token" }, { status: 401 });
-  }
-
-  // Check expiry
-  const exp = claims.exp as number | undefined;
-  if (exp && exp * 1000 < Date.now()) {
-    return NextResponse.json({ error: "Unauthorized: token expired" }, { status: 401 });
-  }
-
-  const callerEmail = (claims.email as string | undefined) ?? "";
-  const callerId = (claims.sub as string | undefined) ?? "";
-
-  // Verify admin via email (fast path) or profiles table (fallback).
-  // Use the caller's own JWT — avoids a silent failure when SUPABASE_SERVICE_ROLE_KEY
-  // is not available, since RLS already allows a user to SELECT their own profile row.
-  let isAdmin = ADMIN_EMAILS.includes(callerEmail);
-  if (!isAdmin && callerId) {
-    const supabaseForCheck = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      { global: { headers: { Authorization: `Bearer ${token}` } } }
+    const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
+    const { data: inviteData, error: inviteErr } = await admin.auth.admin.inviteUserByEmail(
+      email,
+      {
+        redirectTo: `${siteUrl}/reset-password`,
+        data: { full_name: full_name ?? null, company_name: company_name ?? null },
+      },
     );
-    const { data: p } = await supabaseForCheck
-      .from("profiles")
-      .select("role")
-      .eq("id", callerId)
-      .single();
-    isAdmin = p?.role === "admin";
-  }
+    if (inviteErr || !inviteData?.user) {
+      throw new HttpError(400, "No se pudo enviar la invitación");
+    }
+    const newUserId = inviteData.user.id;
 
-  if (!isAdmin) {
-    return NextResponse.json({ error: `Forbidden (email: ${callerEmail})` }, { status: 403 });
-  }
-
-  const body = await req.json();
-  const { email, full_name, company_name, template_id, section_ids, role } = body as {
-    email: string;
-    full_name?: string;
-    company_name?: string;
-    template_id?: number | null;
-    section_ids?: number[] | null;
-    role?: "client" | "admin";
-  };
-  const invitedRole: "client" | "admin" = role === "admin" ? "admin" : "client";
-
-  if (!email) {
-    return NextResponse.json({ error: "email is required" }, { status: 400 });
-  }
-
-  const redirectTo =
-    (process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000") + "/reset-password";
-
-  const { data: inviteData, error: inviteErr } =
-    await supabaseAdmin.auth.admin.inviteUserByEmail(email, {
-      redirectTo,
-      data: {
-        role: invitedRole,
+    // Role is written server-side with the service role; it is never taken
+    // from user metadata, which the user can modify themselves.
+    const { error: profileErr } = await admin.from("profiles").upsert(
+      {
+        id: newUserId,
         full_name: full_name ?? null,
         company_name: company_name ?? null,
+        role,
+        invited_at: new Date().toISOString(),
+        template_id: template_id ?? null,
       },
-    });
-  if (inviteErr) {
-    return NextResponse.json({ error: inviteErr.message }, { status: 400 });
-  }
+      { onConflict: "id" },
+    );
+    if (profileErr) throw profileErr;
 
-  const newUserId = inviteData.user.id;
+    if (role === "client" && template_id) {
+      const { data: templateSections, error: tsErr } = await admin
+        .from("template_sections")
+        .select("section_id, custom_description, display_order")
+        .eq("template_id", template_id);
+      if (tsErr) throw tsErr;
 
-  await supabaseAdmin.from("profiles").upsert(
-    {
-      id: newUserId,
-      full_name: full_name ?? null,
-      company_name: company_name ?? null,
-      role: invitedRole,
-      invited_at: new Date().toISOString(),
-      template_id: template_id ?? null,
-    },
-    { onConflict: "id" }
-  );
-
-  // Assign sections from template — only for clients
-  if (invitedRole === "client" && template_id) {
-    let query = supabaseAdmin.from("template_sections").select("*").eq("template_id", template_id);
-    const { data: ts } = await query;
-    const rows = (ts ?? [])
-      .filter((row) => !section_ids || section_ids.includes(row.section_id))
-      .map((row) => ({
-        client_id: newUserId,
-        section_id: row.section_id,
-        custom_description: row.custom_description,
-        display_order: row.display_order,
-      }));
-    if (rows.length > 0) {
-      await supabaseAdmin.from("client_sections").insert(rows);
+      const rows = (templateSections ?? [])
+        .filter((row) => !section_ids || section_ids.includes(row.section_id))
+        .map((row) => ({
+          client_id: newUserId,
+          section_id: row.section_id,
+          custom_description: row.custom_description,
+          display_order: row.display_order,
+        }));
+      if (rows.length > 0) {
+        const { error: insertErr } = await admin.from("client_sections").insert(rows);
+        if (insertErr) throw insertErr;
+      }
     }
-  }
 
-  return NextResponse.json({ success: true, userId: newUserId });
+    return NextResponse.json({ success: true, userId: newUserId });
+  } catch (err) {
+    return errorResponse(err, "invite");
+  }
 }
