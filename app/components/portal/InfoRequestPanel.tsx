@@ -5,6 +5,7 @@ import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/app/contexts/AuthContext";
 import type { ClientTask, TaskFile, TaskQuestion, TaskResponse } from "@/lib/types";
 import { useToast } from "./Toast";
+import { storageObjectName } from "@/lib/storagePath";
 
 interface InfoRequestPanelProps {
   task: ClientTask;
@@ -48,11 +49,6 @@ export default function InfoRequestPanel({ task, onClose, onSaved, isAdmin, clie
   const [newQuestionText, setNewQuestionText] = useState("");
   const [newQuestionPlaceholder, setNewQuestionPlaceholder] = useState("");
   const [addingQuestion, setAddingQuestion] = useState(false);
-
-  useEffect(() => {
-    requestAnimationFrame(() => setVisible(true));
-    loadData();
-  }, []);
 
   const loadData = async () => {
     const { data: questionsData } = await supabase
@@ -101,6 +97,12 @@ export default function InfoRequestPanel({ task, onClose, onSaved, isAdmin, clie
 
     setLoading(false);
   };
+
+  useEffect(() => {
+    requestAnimationFrame(() => setVisible(true));
+    loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- load once on open
+  }, []);
 
   // Calculate progress and update client_tasks
   const updateTaskProgress = async (
@@ -208,7 +210,7 @@ export default function InfoRequestPanel({ task, onClose, onSaved, isAdmin, clie
   };
 
   const handleFileUpload = async (questionId: string, file: File) => {
-    const path = `${effectiveClientId}/${questionId}/${Date.now()}_${file.name}`;
+    const path = `${effectiveClientId}/${questionId}/${storageObjectName(file.name)}`;
     const { error: uploadError } = await supabase.storage
       .from("submissions")
       .upload(path, file);

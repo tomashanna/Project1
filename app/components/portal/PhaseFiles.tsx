@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import type { PhaseFile } from "@/lib/types";
+import { storageObjectName } from "@/lib/storagePath";
 
 interface PhaseFilesProps {
   phaseId: string;
@@ -32,7 +33,7 @@ export default function PhaseFiles({ phaseId, clientId, initialFiles }: PhaseFil
     e.target.value = "";
 
     setUploading(true);
-    const filePath = `${clientId}/phases/${phaseId}/${Date.now()}_${file.name}`;
+    const filePath = `${clientId}/phases/${phaseId}/${storageObjectName(file.name)}`;
 
     const { error: uploadError } = await supabase.storage
       .from("submissions")
